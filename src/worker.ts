@@ -47,7 +47,7 @@ import { AGENT_ERROR_DEDUPLICATION_WINDOW_MS, METRIC_NAMES } from "./constants.j
 import { EscalationManager } from "./escalation.js";
 import type { EscalationEvent } from "./escalation.js";
 import { isTelegramUpdateAllowed, validateTelegramAllowlists } from "./allowlist.js";
-import { validateSecretRefFields } from "./secret-ref-validation.js";
+import { toSecretRefPayload, validateSecretRefFields } from "./secret-ref-validation.js";
 import { shouldNotifyApproval } from "./approval-routing.js";
 import { buildPaperclipAuthHeaders, fetchPaperclipApi } from "./paperclip-api.js";
 import { resolveStartupTelegramBotToken, type TelegramRuntimeHealth } from "./runtime-token.js";
@@ -222,7 +222,14 @@ async function resolveBoardApiToken(
     if (seen.has(candidate.ref)) continue;
     seen.add(candidate.ref);
     try {
-      return await ctx.secrets.resolve(candidate.ref);
+      // LOCAL PATCH (Marveen): company-scoped resolve -- see runtime-token.ts.
+      const scopedCompanyId = companyId ?? setupCompanyId;
+      return await ctx.secrets.resolve(
+        toSecretRefPayload(candidate.ref) ?? candidate.ref,
+        scopedCompanyId
+          ? { companyId: scopedCompanyId, configPath: "paperclipBoardApiTokenRef" }
+          : {},
+      );
     } catch (err) {
       ctx.logger.warn("Failed to resolve board API token secret", {
         source: candidate.source,
@@ -351,9 +358,41 @@ async function resolveCompanyIdOrNull(ctx: PluginContext, chatId: string): Promi
   }
 }
 
+// LOCAL PATCH (Marveen): the host denies an unscoped `ctx.config.get()` --
+// outside a company-scoped invocation the governed-access gate rejects it with
+// "company context is required", and setup() has no invocation scope. The
+// upstream plugin (0.3.0 / npm 0.7.1) still calls it with no argument, which
+// makes worker initialize fail on paperclipai >= 2026.722. `companies.list` is
+// the one call the gate allows unscoped, so resolve the company that actually
+// has a stored config for this plugin and read the config with that id.
+let setupCompanyId: string | null = null;
+
+async function resolveSetupConfig(ctx: PluginContext): Promise<Record<string, unknown>> {
+  let companies: { id: string }[] = [];
+  try {
+    companies = (await ctx.companies.list()) as { id: string }[];
+  } catch (err) {
+    ctx.logger.warn("Could not list companies for setup config resolution");
+    return {};
+  }
+  for (const company of companies) {
+    try {
+      const cfg = await ctx.config.get(company.id);
+      if (cfg && Object.keys(cfg).length > 0) {
+        setupCompanyId = company.id;
+        ctx.logger.info("Telegram plugin config resolved for a company");
+        return cfg as Record<string, unknown>;
+      }
+    } catch {
+      // No config stored for this company, or access denied. Try the next one.
+    }
+  }
+  return {};
+}
+
 const plugin = definePlugin({
   async setup(ctx) {
-    const rawConfig = await ctx.config.get();
+    const rawConfig = await resolveSetupConfig(ctx);
     ctx.logger.info("Telegram plugin config loaded");
     const config = rawConfig as unknown as TelegramConfig;
     const baseUrl = config.paperclipBaseUrl || "http://localhost:3100";
@@ -383,7 +422,7 @@ const plugin = definePlugin({
 
     const token = await resolveStartupTelegramBotToken(ctx, config.telegramBotTokenRef, (health) => {
       runtimeHealth = health;
-    });
+    }, setupCompanyId);
     if (!token) {
       ctx.logger.warn("Telegram plugin runtime disabled because bot token could not be resolved");
       return;
