@@ -48,12 +48,22 @@ import { EscalationManager } from "./escalation.js";
 import type { EscalationEvent } from "./escalation.js";
 import { isTelegramUpdateAllowed, validateTelegramAllowlists } from "./allowlist.js";
 import { toSecretRefPayload, validateSecretRefFields } from "./secret-ref-validation.js";
+import {
+  NARROW_ATTENTION_KINDS,
+  selectAttention,
+  formatAttentionItem,
+  type AttentionItem,
+} from "./attention.js";
 import { shouldNotifyApproval } from "./approval-routing.js";
 import { buildPaperclipAuthHeaders, fetchPaperclipApi } from "./paperclip-api.js";
 import { resolveStartupTelegramBotToken, type TelegramRuntimeHealth } from "./runtime-token.js";
 
 type TelegramConfig = {
   telegramBotTokenRef: string;
+  /** Poll the board's "waiting on a human" feed and report new items. */
+  notifyOnAttention: boolean;
+  /** Which attention source kinds to report. Defaults to NARROW_ATTENTION_KINDS. */
+  attentionSourceKinds?: string[];
   defaultChatId: string;
   approvalsChatId: string;
   approvalsTopicId: string;
@@ -1100,6 +1110,68 @@ const plugin = definePlugin({
     });
 
     // --- Phase 5: Watch checker job ---
+    // The plugin event catalogue carries no interaction event, so an agent
+    // asking a question on an issue thread reaches nobody. Poll the same feed
+    // the Decisions page renders and report what is new.
+    ctx.jobs.register("check-attention", async () => {
+      if (!config.notifyOnAttention) return;
+      const attentionCompanyId = setupCompanyId;
+      if (!attentionCompanyId) return;
+
+      try {
+        const boardApiToken = await resolveBoardApiToken(ctx, config, attentionCompanyId);
+        const res = await fetchPaperclipApi(
+          ctx,
+          `${baseUrl}/api/companies/${encodeURIComponent(attentionCompanyId)}/attention`,
+          { method: "GET", headers: buildPaperclipAuthHeaders(boardApiToken) },
+        );
+        const payload = await res.json();
+        const items = (Array.isArray(payload) ? payload : []) as AttentionItem[];
+
+        const stateKey = `attention_seen_${attentionCompanyId}`;
+        const stored = await ctx.state.get({ scopeKind: "instance", stateKey }) as string[] | null;
+        const kinds = config.attentionSourceKinds?.length
+          ? config.attentionSourceKinds
+          : NARROW_ATTENTION_KINDS;
+
+        const selection = selectAttention(items, kinds, stored);
+        await ctx.state.set({ scopeKind: "instance", stateKey }, selection.seenIds);
+
+        const chatId = config.approvalsChatId || config.defaultChatId;
+        if (!chatId) return;
+        const messageThreadId = parseTopicId(config.approvalsTopicId);
+
+        if (selection.firstRun) {
+          if (selection.backlogCount === 0) return;
+          await sendMessage(
+            ctx,
+            token,
+            chatId,
+            escapeMarkdownV2(
+              `${selection.backlogCount} tétel vár rád a Decisions oldalon. Ezeket most nem küldöm ki egyenként — mostantól csak az újakat jelzem.`,
+            ),
+            { parseMode: "MarkdownV2", messageThreadId },
+          );
+          return;
+        }
+
+        for (const attentionItem of selection.fresh) {
+          await sendMessage(
+            ctx,
+            token,
+            chatId,
+            formatAttentionItem(attentionItem, config.paperclipPublicUrl || undefined),
+            { parseMode: "MarkdownV2", messageThreadId },
+          );
+        }
+        if (selection.fresh.length > 0) {
+          ctx.logger.info("Reported attention items", { count: selection.fresh.length });
+        }
+      } catch (err) {
+        ctx.logger.error("Attention check failed", { error: String(err) });
+      }
+    });
+
     ctx.jobs.register("check-watches", async () => {
       try {
         await checkWatches(

@@ -65,6 +65,12 @@ const manifest: PaperclipPluginManifestV1 = {
       schedule: "* * * * *",
     },
     {
+      jobKey: "check-attention",
+      displayName: "Check Decisions Feed",
+      description: "Report new items waiting on a human -- agent questions, approvals, agent errors.",
+      schedule: "*/5 * * * *",
+    },
+    {
       jobKey: "check-watches",
       displayName: "Check Proactive Watches",
       description: "Evaluate registered watches and send suggestions when conditions are met.",
