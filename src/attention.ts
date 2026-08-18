@@ -31,10 +31,13 @@ export type AttentionItem = {
   severity?: string;
   inlineResolvable?: boolean;
   subject?: {
+    /** For an interaction this is the interaction id, not the issue id. */
+    id?: string;
     title?: string;
     identifier?: string | null;
     href?: string | null;
     status?: string;
+    metadata?: { kind?: string; issueId?: string } & Record<string, unknown>;
   };
   decisionVerbs?: Array<{ id: string; label: string; description?: string }>;
 };
@@ -126,4 +129,71 @@ export function formatAttentionItem(item: AttentionItem, publicUrl?: string): st
   }
 
   return lines.join("\n");
+}
+
+
+// --- Inline resolution ---
+//
+// Telegram caps callback_data at 64 bytes, which two UUIDs do not fit in. The
+// buttons therefore carry a short token and the plugin stores the ids under it.
+
+const CALLBACK_PREFIX = "atn";
+const TOKEN_LENGTH = 12;
+
+export type AttentionActionTarget = {
+  issueId: string;
+  interactionId: string;
+};
+
+export type AttentionAction = {
+  token: string;
+  target: AttentionActionTarget;
+  buttons: Array<{ text: string; callback_data: string }>;
+};
+
+const VERB_CODES: Record<string, string> = { accept: "a", reject: "r" };
+const CODE_VERBS: Record<string, string> = { a: "accept", r: "reject" };
+
+/**
+ * Build the inline buttons for an item the reader can resolve from Telegram.
+ *
+ * Only pending issue-thread interactions qualify: they are the ones the
+ * attention feed marks inlineResolvable and that map onto the accept/reject
+ * endpoints. Everything else is reported without buttons rather than with
+ * buttons that would fail on click.
+ */
+export function buildAttentionAction(item: AttentionItem): AttentionAction | null {
+  if (item.sourceKind !== "issue_thread_interaction") return null;
+  if (item.inlineResolvable === false) return null;
+
+  const interactionId = item.subject?.id;
+  const issueId = item.subject?.metadata?.issueId;
+  if (!interactionId || !issueId) return null;
+
+  const verbs = (item.decisionVerbs ?? []).filter((verb) => VERB_CODES[verb.id]);
+  if (verbs.length === 0) return null;
+
+  const token = interactionId.replace(/-/g, "").slice(0, TOKEN_LENGTH);
+  return {
+    token,
+    target: { issueId, interactionId },
+    buttons: verbs.map((verb) => ({
+      text: verb.label,
+      callback_data: `${CALLBACK_PREFIX}_${VERB_CODES[verb.id]}_${token}`,
+    })),
+  };
+}
+
+export function parseAttentionCallback(
+  data: string,
+): { verb: string; token: string } | null {
+  const parts = data.split("_");
+  if (parts.length !== 3 || parts[0] !== CALLBACK_PREFIX) return null;
+  const verb = CODE_VERBS[parts[1] ?? ""];
+  if (!verb || !parts[2]) return null;
+  return { verb, token: parts[2] };
+}
+
+export function attentionActionStateKey(token: string): string {
+  return `attention_action_${token}`;
 }

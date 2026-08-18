@@ -52,7 +52,11 @@ import {
   NARROW_ATTENTION_KINDS,
   selectAttention,
   formatAttentionItem,
+  buildAttentionAction,
+  parseAttentionCallback,
+  attentionActionStateKey,
   type AttentionItem,
+  type AttentionActionTarget,
 } from "./attention.js";
 import { shouldNotifyApproval } from "./approval-routing.js";
 import { buildPaperclipAuthHeaders, fetchPaperclipApi } from "./paperclip-api.js";
@@ -1156,12 +1160,26 @@ const plugin = definePlugin({
         }
 
         for (const attentionItem of selection.fresh) {
+          // Buttons carry a short token; the ids they resolve to are stored
+          // here because callback_data cannot hold two UUIDs.
+          const action = buildAttentionAction(attentionItem);
+          if (action) {
+            await ctx.state.set(
+              { scopeKind: "instance", stateKey: attentionActionStateKey(action.token) },
+              action.target,
+            );
+          }
+
           await sendMessage(
             ctx,
             token,
             chatId,
             formatAttentionItem(attentionItem, config.paperclipPublicUrl || undefined),
-            { parseMode: "MarkdownV2", messageThreadId },
+            {
+              parseMode: "MarkdownV2",
+              messageThreadId,
+              ...(action ? { inlineKeyboard: [action.buttons] } : {}),
+            },
           );
         }
         if (selection.fresh.length > 0) {
@@ -1393,6 +1411,57 @@ async function handleCallbackQuery(
       }
     } catch (err) {
       await answerCallbackQuery(ctx, token, query.id, `Failed: ${String(err)}`);
+    }
+    return;
+  }
+
+  const attentionCallback = parseAttentionCallback(data);
+  if (attentionCallback) {
+    const target = await ctx.state.get({
+      scopeKind: "instance",
+      stateKey: attentionActionStateKey(attentionCallback.token),
+    }) as AttentionActionTarget | null;
+
+    if (!target) {
+      await answerCallbackQuery(ctx, token, query.id, "Ez a kérés már nem elérhető.");
+      return;
+    }
+
+    try {
+      await fetchPaperclipApi(
+        ctx,
+        `${baseUrl}/api/issues/${encodeURIComponent(target.issueId)}` +
+          `/interactions/${encodeURIComponent(target.interactionId)}/${attentionCallback.verb}`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...buildPaperclipAuthHeaders(boardApiToken),
+          },
+          body: JSON.stringify({}),
+        },
+      );
+
+      const decided = attentionCallback.verb === "accept" ? "Elfogadva" : "Elutasítva";
+      await answerCallbackQuery(ctx, token, query.id, decided);
+
+      if (chatId && messageId) {
+        await editMessage(
+          ctx,
+          token,
+          chatId,
+          messageId,
+          `${escapeMarkdownV2(attentionCallback.verb === "accept" ? "\u2705" : "\u274c")} ` +
+            `*${escapeMarkdownV2(decided)}* \\- ${escapeMarkdownV2(actor)}`,
+          { parseMode: "MarkdownV2" },
+        );
+      }
+      ctx.logger.info("Attention item resolved from Telegram", {
+        verb: attentionCallback.verb,
+        actor,
+      });
+    } catch (err) {
+      await answerCallbackQuery(ctx, token, query.id, `Nem sikerült: ${String(err)}`);
     }
     return;
   }

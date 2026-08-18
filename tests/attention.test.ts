@@ -3,6 +3,8 @@ import {
   NARROW_ATTENTION_KINDS,
   selectAttention,
   formatAttentionItem,
+  buildAttentionAction,
+  parseAttentionCallback,
   type AttentionItem,
 } from "../src/attention.js";
 
@@ -102,5 +104,62 @@ describe("formatAttentionItem", () => {
     const text = formatAttentionItem(item("a", "approval"), "http://localhost:3333");
 
     expect(text).not.toContain("localhost:3333");
+  });
+});
+
+describe("attention buttons", () => {
+  const interaction: AttentionItem = {
+    id: "att-1",
+    sourceKind: "issue_thread_interaction",
+    inlineResolvable: true,
+    subject: {
+      title: "Újraindíthatom a szervert?",
+      identifier: null,
+      metadata: { kind: "request_confirmation", issueId: "b70487ee-4268-4e9a-bedf-08e52c43a277" },
+      id: "bd25269c-f53e-4d46-b1a5-342e7d29111c",
+    },
+    decisionVerbs: [
+      { id: "accept", label: "Igen, jóváhagytam" },
+      { id: "reject", label: "Még nem" },
+    ],
+  } as AttentionItem;
+
+  it("offers the agent's own wording as the button labels", () => {
+    const built = buildAttentionAction(interaction);
+
+    expect(built).not.toBeNull();
+    expect(built!.buttons.map((b) => b.text)).toEqual(["Igen, jóváhagytam", "Még nem"]);
+  });
+
+  it("keeps callback data inside Telegram's 64-byte limit", () => {
+    const built = buildAttentionAction(interaction)!;
+
+    for (const button of built.buttons) {
+      expect(Buffer.byteLength(button.callback_data, "utf8")).toBeLessThanOrEqual(64);
+    }
+  });
+
+  it("carries the issue and interaction ids so the click can be resolved later", () => {
+    const built = buildAttentionAction(interaction)!;
+
+    expect(built.target).toEqual({
+      issueId: "b70487ee-4268-4e9a-bedf-08e52c43a277",
+      interactionId: "bd25269c-f53e-4d46-b1a5-342e7d29111c",
+    });
+  });
+
+  it("offers no buttons for an item that cannot be resolved inline", () => {
+    expect(buildAttentionAction({ id: "x", sourceKind: "agent_error_alert" })).toBeNull();
+  });
+
+  it("round-trips its own callback data", () => {
+    const built = buildAttentionAction(interaction)!;
+    const parsed = parseAttentionCallback(built.buttons[0]!.callback_data);
+
+    expect(parsed).toEqual({ verb: "accept", token: built.token });
+  });
+
+  it("ignores callback data belonging to another feature", () => {
+    expect(parseAttentionCallback("approve_123")).toBeNull();
   });
 });
