@@ -554,17 +554,34 @@ async function fetchBoardAccessIdentity(boardApiToken: string): Promise<string |
   return getIdentityLabel(identity);
 }
 
-async function fetchPluginConfig(): Promise<Record<string, unknown>> {
+// Plugin config is company-scoped on the host: the GET requires a companyId
+// query parameter and the POST requires it in the body. Omitting it fails every
+// request with `"companyId" is required and must be a non-empty string`, which
+// surfaces as "… settings could not be loaded" on every panel of this page and
+// makes the settings unusable — the config can then only be written through the
+// API. The mounted slot receives the company in its context; thread it through.
+function requireCompanyId(companyId: string): string {
+  if (!companyId) {
+    throw new Error("No company selected. Open this page from a company context.");
+  }
+  return companyId;
+}
+
+async function fetchPluginConfig(companyId: string): Promise<Record<string, unknown>> {
   const record = await fetchHostJson<PluginConfigResponse>(
-    `/api/plugins/${encodeURIComponent(TELEGRAM_PLUGIN_ID)}/config`,
+    `/api/plugins/${encodeURIComponent(TELEGRAM_PLUGIN_ID)}/config` +
+      `?companyId=${encodeURIComponent(requireCompanyId(companyId))}`,
   );
   return record?.configJson && typeof record.configJson === "object" ? record.configJson : {};
 }
 
-async function savePluginConfig(configJson: Record<string, unknown>): Promise<void> {
+async function savePluginConfig(
+  companyId: string,
+  configJson: Record<string, unknown>,
+): Promise<void> {
   await fetchHostJson(`/api/plugins/${encodeURIComponent(TELEGRAM_PLUGIN_ID)}/config`, {
     method: "POST",
-    body: JSON.stringify({ configJson }),
+    body: JSON.stringify({ companyId: requireCompanyId(companyId), configJson }),
   });
 }
 
@@ -658,7 +675,7 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
       setRoutingLoading(true);
       setRoutingMessage(null);
       try {
-        const config = await fetchPluginConfig();
+        const config = await fetchPluginConfig(companyId);
         if (cancelled) return;
         const nextRoutingConfig = extractRoutingConfig(config);
         setRoutingConfig(nextRoutingConfig);
@@ -692,7 +709,7 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
       setProactiveLoading(true);
       setProactiveMessage(null);
       try {
-        const config = await fetchPluginConfig();
+        const config = await fetchPluginConfig(companyId);
         if (cancelled) return;
         const nextProactiveConfig = extractProactiveConfig(config);
         setProactiveConfig(nextProactiveConfig);
@@ -726,7 +743,7 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
       setEscalationLoading(true);
       setEscalationMessage(null);
       try {
-        const config = await fetchPluginConfig();
+        const config = await fetchPluginConfig(companyId);
         if (cancelled) return;
         const nextEscalationConfig = extractEscalationConfig(config);
         setEscalationConfig(nextEscalationConfig);
@@ -760,7 +777,7 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
       setMediaLoading(true);
       setMediaMessage(null);
       try {
-        const config = await fetchPluginConfig();
+        const config = await fetchPluginConfig(companyId);
         if (cancelled) return;
         const nextMediaConfig = extractMediaConfig(config);
         setMediaConfig(nextMediaConfig);
@@ -794,7 +811,7 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
       setAccessLoading(true);
       setAccessMessage(null);
       try {
-        const config = await fetchPluginConfig();
+        const config = await fetchPluginConfig(companyId);
         if (cancelled) return;
         const nextAccessConfig = extractAccessConfig(config);
         setAccessConfig(nextAccessConfig);
@@ -828,7 +845,7 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
       setConnectionLoading(true);
       setConnectionMessage(null);
       try {
-        const config = await fetchPluginConfig();
+        const config = await fetchPluginConfig(companyId);
         if (cancelled) return;
         const nextConnectionConfig = extractConnectionConfig(config);
         setConnectionConfig(nextConnectionConfig);
@@ -862,7 +879,7 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
       setBoardConfigLoading(true);
       setBoardConfigMessage(null);
       try {
-        const config = await fetchPluginConfig();
+        const config = await fetchPluginConfig(companyId);
         if (cancelled) return;
         const nextBoardConfig = extractBoardConfig(config);
         setBoardConfig(nextBoardConfig);
@@ -949,9 +966,9 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
     setBoardConfigSaving(true);
     setBoardConfigMessage(null);
     try {
-      const currentConfig = await fetchPluginConfig();
+      const currentConfig = await fetchPluginConfig(companyId);
       const nextConfig = { ...currentConfig, ...boardConfig };
-      await savePluginConfig(nextConfig);
+      await savePluginConfig(companyId, nextConfig);
       setBoardSnapshot(boardConfig);
       setBoardConfigMessage({
         tone: "success",
@@ -973,9 +990,9 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
     setAccessSaving(true);
     setAccessMessage(null);
     try {
-      const currentConfig = await fetchPluginConfig();
+      const currentConfig = await fetchPluginConfig(companyId);
       const nextConfig = { ...currentConfig, ...accessConfig };
-      await savePluginConfig(nextConfig);
+      await savePluginConfig(companyId, nextConfig);
       setAccessSnapshot(accessConfig);
       setAccessMessage({
         tone: "success",
@@ -997,9 +1014,9 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
     setRoutingSaving(true);
     setRoutingMessage(null);
     try {
-      const currentConfig = await fetchPluginConfig();
+      const currentConfig = await fetchPluginConfig(companyId);
       const nextConfig = { ...currentConfig, ...routingConfig };
-      await savePluginConfig(nextConfig);
+      await savePluginConfig(companyId, nextConfig);
       setRoutingSnapshot(routingConfig);
       setRoutingMessage({
         tone: "success",
@@ -1021,9 +1038,9 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
     setConnectionSaving(true);
     setConnectionMessage(null);
     try {
-      const currentConfig = await fetchPluginConfig();
+      const currentConfig = await fetchPluginConfig(companyId);
       const nextConfig = { ...currentConfig, ...connectionConfig };
-      await savePluginConfig(nextConfig);
+      await savePluginConfig(companyId, nextConfig);
       setConnectionSnapshot(connectionConfig);
       setConnectionMessage({
         tone: "success",
@@ -1045,9 +1062,9 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
     setMediaSaving(true);
     setMediaMessage(null);
     try {
-      const currentConfig = await fetchPluginConfig();
+      const currentConfig = await fetchPluginConfig(companyId);
       const nextConfig = { ...currentConfig, ...mediaConfig };
-      await savePluginConfig(nextConfig);
+      await savePluginConfig(companyId, nextConfig);
       setMediaSnapshot(mediaConfig);
       setMediaMessage({
         tone: "success",
@@ -1069,9 +1086,9 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
     setEscalationSaving(true);
     setEscalationMessage(null);
     try {
-      const currentConfig = await fetchPluginConfig();
+      const currentConfig = await fetchPluginConfig(companyId);
       const nextConfig = { ...currentConfig, ...escalationConfig };
-      await savePluginConfig(nextConfig);
+      await savePluginConfig(companyId, nextConfig);
       setEscalationSnapshot(escalationConfig);
       setEscalationMessage({
         tone: "success",
@@ -1093,9 +1110,9 @@ export function TelegramSettingsPage({ context }: PluginSettingsPageProps): Reac
     setProactiveSaving(true);
     setProactiveMessage(null);
     try {
-      const currentConfig = await fetchPluginConfig();
+      const currentConfig = await fetchPluginConfig(companyId);
       const nextConfig = { ...currentConfig, ...proactiveConfig };
-      await savePluginConfig(nextConfig);
+      await savePluginConfig(companyId, nextConfig);
       setProactiveSnapshot(proactiveConfig);
       setProactiveMessage({
         tone: "success",
