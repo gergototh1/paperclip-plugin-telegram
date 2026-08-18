@@ -125,9 +125,17 @@ export async function checkWatches(
   ctx: PluginContext,
   token: string,
   config: { maxSuggestionsPerHourPerCompany: number; watchDeduplicationWindowMs: number },
+  companyIds?: string[],
 ): Promise<void> {
-  // Get all companies that have watches
-  const companies = await ctx.companies.list();
+  // Only the companies this plugin is configured for can be reached from a job.
+  // The host authorizes proactive worker->host calls against the plugin's
+  // configured companies, so every other company on the instance fails the
+  // company-scoped state reads below with "company context is required" -- one
+  // logged error per unconfigured company, every run. Fall back to listing all
+  // companies when the caller does not know which one is configured.
+  const companies = companyIds?.length
+    ? companyIds.map((id) => ({ id }))
+    : await ctx.companies.list();
 
   for (const company of companies) {
     try {

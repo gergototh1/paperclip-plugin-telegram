@@ -1102,10 +1102,15 @@ const plugin = definePlugin({
     // --- Phase 5: Watch checker job ---
     ctx.jobs.register("check-watches", async () => {
       try {
-        await checkWatches(ctx, token, {
-          maxSuggestionsPerHourPerCompany: config.maxSuggestionsPerHourPerCompany ?? 10,
-          watchDeduplicationWindowMs: config.watchDeduplicationWindowMs ?? 86400000,
-        });
+        await checkWatches(
+          ctx,
+          token,
+          {
+            maxSuggestionsPerHourPerCompany: config.maxSuggestionsPerHourPerCompany ?? 10,
+            watchDeduplicationWindowMs: config.watchDeduplicationWindowMs ?? 86400000,
+          },
+          setupCompanyId ? [setupCompanyId] : undefined,
+        );
       } catch (err) {
         ctx.logger.error("Watch check failed", { error: String(err) });
       }
