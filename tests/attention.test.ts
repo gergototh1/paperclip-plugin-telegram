@@ -5,6 +5,7 @@ import {
   formatAttentionItem,
   buildAttentionAction,
   parseAttentionCallback,
+  parseAttentionFeed,
   type AttentionItem,
 } from "../src/attention.js";
 
@@ -161,5 +162,26 @@ describe("attention buttons", () => {
 
   it("ignores callback data belonging to another feature", () => {
     expect(parseAttentionCallback("approve_123")).toBeNull();
+  });
+});
+
+describe("parseAttentionFeed", () => {
+  it("reads the items out of the feed envelope the endpoint actually returns", () => {
+    const payload = {
+      companyId: "c1",
+      totalCount: 2,
+      countsBySourceKind: { approval: 1 },
+      items: [item("a", "approval"), item("b", "issue_thread_interaction")],
+    };
+
+    expect(parseAttentionFeed(payload).map((i) => i.id)).toEqual(["a", "b"]);
+  });
+
+  it("still accepts a bare array", () => {
+    expect(parseAttentionFeed([item("a", "approval")]).map((i) => i.id)).toEqual(["a"]);
+  });
+
+  it("throws on an unrecognised shape rather than silently reporting nothing", () => {
+    expect(() => parseAttentionFeed({ unexpected: true })).toThrow(/attention/i);
   });
 });

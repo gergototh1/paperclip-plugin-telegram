@@ -54,6 +54,7 @@ import {
   formatAttentionItem,
   buildAttentionAction,
   parseAttentionCallback,
+  parseAttentionFeed,
   attentionActionStateKey,
   type AttentionItem,
   type AttentionActionTarget,
@@ -1129,8 +1130,7 @@ const plugin = definePlugin({
           `${baseUrl}/api/companies/${encodeURIComponent(attentionCompanyId)}/attention`,
           { method: "GET", headers: buildPaperclipAuthHeaders(boardApiToken) },
         );
-        const payload = await res.json();
-        const items = (Array.isArray(payload) ? payload : []) as AttentionItem[];
+        const items = parseAttentionFeed(await res.json());
 
         const stateKey = `attention_seen_${attentionCompanyId}`;
         const stored = await ctx.state.get({ scopeKind: "instance", stateKey }) as string[] | null;
@@ -1139,6 +1139,10 @@ const plugin = definePlugin({
           : NARROW_ATTENTION_KINDS;
 
         const selection = selectAttention(items, kinds, stored);
+        ctx.logger.info(
+          `Attention check: feed=${items.length} stored=${stored === null ? "null" : stored.length} ` +
+            `firstRun=${selection.firstRun} backlog=${selection.backlogCount} fresh=${selection.fresh.length}`,
+        );
         await ctx.state.set({ scopeKind: "instance", stateKey }, selection.seenIds);
 
         const chatId = config.approvalsChatId || config.defaultChatId;

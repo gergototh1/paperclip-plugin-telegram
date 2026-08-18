@@ -197,3 +197,22 @@ export function parseAttentionCallback(
 export function attentionActionStateKey(token: string): string {
   return `attention_action_${token}`;
 }
+
+/**
+ * Read the items out of an attention response.
+ *
+ * The endpoint returns an envelope — { companyId, totalCount, items, … } — not
+ * a bare array. Treating an unrecognised shape as "no items" hides a broken
+ * integration behind a quiet, plausible "nothing is waiting", so this throws
+ * instead.
+ */
+export function parseAttentionFeed(payload: unknown): AttentionItem[] {
+  if (Array.isArray(payload)) return payload as AttentionItem[];
+  if (payload && typeof payload === "object") {
+    const items = (payload as { items?: unknown }).items;
+    if (Array.isArray(items)) return items as AttentionItem[];
+  }
+  throw new Error(
+    "Unrecognised attention response: expected an array or an object with an items array",
+  );
+}
