@@ -275,52 +275,24 @@ async function handleAcpSpawn(
   await sendChatAction(ctx, token, chatId);
 
   const trimmedName = agentName.trim();
-  const displayName = trimmedName.charAt(0).toUpperCase() + trimmedName.slice(1);
   const resolvedCompanyId = companyId ?? await resolveCompanyIdFromChat(ctx, chatId);
 
-  // Try native session first: resolve agent by name, then create session
-  let transport: "native" | "acp" = "acp";
-  let sessionId: string;
-  let agentId = "";
-
-  const resolved = await resolveAgentByName(ctx, trimmedName, resolvedCompanyId);
-  if (resolved) {
-    try {
-      agentId = resolved.id;
-      const session = await ctx.agents.sessions.create(agentId, resolvedCompanyId, {
-        reason: `Telegram thread ${chatId}/${messageThreadId}`,
-      });
-      sessionId = session.sessionId;
-      transport = "native";
-      ctx.logger.info("Created native agent session", { agentId, sessionId });
-    } catch (err) {
-      ctx.logger.error("Native session creation failed, falling back to ACP", {
-        agentId,
-        agentName: trimmedName,
-        companyId: resolvedCompanyId,
-        error: String(err),
-      });
-      sessionId = `acp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-    }
-  } else {
-    ctx.logger.warn("Agent not found by name, using ACP transport", { agentName: trimmedName, companyId: resolvedCompanyId });
-    sessionId = `acp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const newSession = await createSessionForAgent(
+    ctx,
+    chatId,
+    messageThreadId,
+    trimmedName,
+    resolvedCompanyId,
+  );
+  if (!newSession) {
+    await sendMessage(ctx, token, chatId, "Usage: /acp spawn <agent-name>", { messageThreadId });
+    return;
   }
-
-  const now = new Date().toISOString();
-  const newSession: ChatSession = {
-    sessionId,
-    agentId,
-    agentName: trimmedName,
-    agentDisplayName: displayName,
-    transport,
-    spawnedAt: now,
-    status: "active",
-    lastActivityAt: now,
-  };
+  const { sessionId, transport, agentDisplayName: displayName } = newSession;
 
   sessions.push(newSession);
   await saveSessions(ctx, chatId, messageThreadId, sessions);
+  await setTopicBinding(ctx, chatId, messageThreadId, trimmedName);
 
   if (transport === "acp") {
     // Emit ACP spawn event - companyId is SECOND arg
@@ -541,6 +513,13 @@ async function handleAcpClose(
   }
   await saveSessions(ctx, chatId, messageThreadId, sessions);
 
+  // Closing is an explicit "stop", so drop the binding too -- otherwise the
+  // next plain message would revive the agent the user just dismissed.
+  const binding = await getTopicBinding(ctx, chatId, messageThreadId);
+  if (binding && binding.agentName.toLowerCase() === targetSession.agentName.toLowerCase()) {
+    await clearTopicBinding(ctx, chatId, messageThreadId);
+  }
+
   await sendMessage(
     ctx,
     token,
@@ -560,6 +539,112 @@ async function handleAcpClose(
 
 // --- Multi-agent message routing ---
 
+// --- Topic bindings ---
+//
+// A topic remembers which agent it belongs to, so a thread stays chattable
+// without re-running /acp spawn. Without this, a session that ends for any
+// reason (explicit close, cancel, a failed native create) leaves the topic
+// silently dead: routeMessageToAgent finds no active session and returns
+// false, so plain messages vanish with no reply at all.
+
+type TopicAgentBinding = { agentName: string };
+
+function topicBindingKey(chatId: string, threadId: number): string {
+  return `agent_binding_${chatId}_${threadId}`;
+}
+
+async function getTopicBinding(
+  ctx: PluginContext,
+  chatId: string,
+  threadId: number,
+): Promise<TopicAgentBinding | null> {
+  const binding = await ctx.state.get({
+    scopeKind: "instance",
+    stateKey: topicBindingKey(chatId, threadId),
+  }) as TopicAgentBinding | null;
+  return binding?.agentName ? binding : null;
+}
+
+async function setTopicBinding(
+  ctx: PluginContext,
+  chatId: string,
+  threadId: number,
+  agentName: string,
+): Promise<void> {
+  await ctx.state.set(
+    { scopeKind: "instance", stateKey: topicBindingKey(chatId, threadId) },
+    { agentName },
+  );
+}
+
+async function clearTopicBinding(
+  ctx: PluginContext,
+  chatId: string,
+  threadId: number,
+): Promise<void> {
+  await ctx.state.set(
+    { scopeKind: "instance", stateKey: topicBindingKey(chatId, threadId) },
+    null,
+  );
+}
+
+/**
+ * Build an active session for `agentName`, preferring a native Paperclip
+ * session and falling back to ACP transport when the agent cannot be resolved
+ * or the native create fails. The caller stores the returned session.
+ */
+async function createSessionForAgent(
+  ctx: PluginContext,
+  chatId: string,
+  threadId: number,
+  agentName: string,
+  companyId: string,
+): Promise<ChatSession | null> {
+  const trimmedName = agentName.trim();
+  if (!trimmedName) return null;
+
+  const displayName = trimmedName.charAt(0).toUpperCase() + trimmedName.slice(1);
+  let transport: "native" | "acp" = "acp";
+  let sessionId = `acp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  let agentId = "";
+
+  const resolved = await resolveAgentByName(ctx, trimmedName, companyId);
+  if (resolved) {
+    try {
+      agentId = resolved.id;
+      const session = await ctx.agents.sessions.create(resolved.id, companyId, {
+        reason: `Telegram thread ${chatId}/${threadId}`,
+      });
+      sessionId = session.sessionId;
+      transport = "native";
+    } catch (err) {
+      ctx.logger.error("Native session creation failed, falling back to ACP", {
+        agentId: resolved.id,
+        agentName: trimmedName,
+        companyId,
+        error: String(err),
+      });
+    }
+  } else {
+    ctx.logger.warn("Agent not found by name, using ACP transport", {
+      agentName: trimmedName,
+      companyId,
+    });
+  }
+
+  const now = new Date().toISOString();
+  return {
+    sessionId,
+    agentId,
+    agentName: trimmedName,
+    agentDisplayName: displayName,
+    transport,
+    spawnedAt: now,
+    status: "active",
+    lastActivityAt: now,
+  };
+}
+
 export async function routeMessageToAgent(
   ctx: PluginContext,
   token: string,
@@ -569,10 +654,34 @@ export async function routeMessageToAgent(
   replyToMessageId?: number,
   companyId?: string,
 ): Promise<boolean> {
-  const sessions = await getSessions(ctx, chatId, threadId);
-  const activeSessions = sessions.filter((s) => s.status === "active");
+  let sessions = await getSessions(ctx, chatId, threadId);
+  let activeSessions = sessions.filter((s) => s.status === "active");
 
-  if (activeSessions.length === 0) return false;
+  if (activeSessions.length === 0) {
+    // No live session. Only revive when the topic is bound to an agent --
+    // an unbound topic must stay out of the way.
+    const binding = await getTopicBinding(ctx, chatId, threadId);
+    if (!binding) return false;
+
+    const bindingCompanyId = companyId ?? await resolveCompanyIdFromChat(ctx, chatId);
+    const revived = await createSessionForAgent(
+      ctx,
+      chatId,
+      threadId,
+      binding.agentName,
+      bindingCompanyId,
+    );
+    if (!revived) return false;
+
+    sessions = [...sessions, revived];
+    activeSessions = [revived];
+    await saveSessions(ctx, chatId, threadId, sessions);
+    ctx.logger.info("Revived agent session for bound topic", {
+      agentName: binding.agentName,
+      chatId,
+      threadId,
+    });
+  }
 
   let targetSession: ChatSession | undefined;
 

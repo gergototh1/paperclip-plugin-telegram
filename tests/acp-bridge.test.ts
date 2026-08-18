@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { getSessions, routeMessageToAgent, handleHandoffToolCall } from "../src/acp-bridge.js";
+import { getSessions, routeMessageToAgent, handleHandoffToolCall, handleAcpCommand } from "../src/acp-bridge.js";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 
 let sentMessages: Array<{ chatId: string; text: string; options?: Record<string, unknown> }> = [];
@@ -347,5 +347,59 @@ describe("handleHandoffToolCall - approval callback data", () => {
 
     const parsed = JSON.parse(result.content!);
     expect(parsed.status).toBe("handed_off");
+  });
+});
+
+describe("Bound topics - chatting without commands", () => {
+  function ctxWithAgents() {
+    const ctx = mockCtx();
+    (ctx as unknown as { agents: { list: unknown } }).agents.list = vi
+      .fn()
+      .mockResolvedValue([{ id: "agent-ceo", name: "CEO" }]);
+    return ctx;
+  }
+
+  it("respawns a session from the topic binding when none is active", async () => {
+    const ctx = ctxWithAgents();
+    stateStore["agent_binding_chat-1_42"] = { agentName: "CEO" };
+
+    const routed = await routeMessageToAgent(ctx, "token", "chat-1", 42, "szia", undefined, "company-1");
+
+    expect(routed).toBe(true);
+    expect(ctx.agents.sessions.create).toHaveBeenCalledWith(
+      "agent-ceo",
+      "company-1",
+      expect.anything(),
+    );
+    const sessions = await getSessions(ctx, "chat-1", 42);
+    expect(sessions.filter((s) => s.status === "active")).toHaveLength(1);
+  });
+
+  it("leaves an unbound topic silent rather than spawning something arbitrary", async () => {
+    const ctx = ctxWithAgents();
+
+    const routed = await routeMessageToAgent(ctx, "token", "chat-1", 42, "szia", undefined, "company-1");
+
+    expect(routed).toBe(false);
+    expect(ctx.agents.sessions.create).not.toHaveBeenCalled();
+  });
+
+  it("binds the topic to the agent when a session is spawned", async () => {
+    const ctx = ctxWithAgents();
+
+    await handleAcpCommand(ctx, "token", "chat-1", "spawn CEO", 42, "company-1");
+
+    expect(stateStore["agent_binding_chat-1_42"]).toEqual({ agentName: "CEO" });
+  });
+
+  it("clears the binding when the session is closed, so the topic stays closed", async () => {
+    const ctx = ctxWithAgents();
+    await handleAcpCommand(ctx, "token", "chat-1", "spawn CEO", 42, "company-1");
+
+    await handleAcpCommand(ctx, "token", "chat-1", "close", 42, "company-1");
+
+    expect(stateStore["agent_binding_chat-1_42"]).toBeFalsy();
+    const routed = await routeMessageToAgent(ctx, "token", "chat-1", 42, "szia", undefined, "company-1");
+    expect(routed).toBe(false);
   });
 });
